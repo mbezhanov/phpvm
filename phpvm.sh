@@ -65,7 +65,15 @@ phpvm_use() {
     sudo docker image pull php:$1 && sudo docker image tag php:$1 phpvm:$1
   fi
 
-  sudo docker container run --name $CONTAINER_NAME -v $(pwd):/src --workdir /src -dt phpvm:$1 ash
+  local SHELL_TYPE=bash
+
+  case "$CONTAINER_NAME" in 
+    *alpine*)
+      SHELL_TYPE=ash
+    ;;
+  esac
+
+  sudo docker container run --name $CONTAINER_NAME -v $(pwd):/src --workdir /src -dt phpvm:$1 $SHELL_TYPE
 }
 
 phpvm_ls() {
@@ -118,15 +126,27 @@ phpvm_tty() {
   sudo docker container exec -it $CONTAINER_ID $SHELL_TYPE
 }
 
+phpvm_deactivate() {
+  local CONTAINER_ID=$(sudo docker container ls --filter name=phpvm --filter "status=running" --format "{{.ID}}")
+
+  if [ -z "$CONTAINER_ID" ]; then
+    phpvm_err 'PHP is not running.'
+    return $PHPVM_FAIL
+  fi
+
+  phpvm_remove_dangling_containers
+}
+
 phpvm_print_usage_info() {
   phpvm_echo
-  phpvm_echo 'PHP Version Manager (v0.1.0)'
+  phpvm_echo 'PHP Version Manager (v0.2.0)'
   phpvm_echo
   phpvm_echo 'Usage:'
   phpvm_echo '  phpvm ls            List all installed PHP versions'
   phpvm_echo '  phpvm use <version> Install and use a particular PHP version'
   phpvm_echo '  phpvm rm <version>  Remove an installed PHP version'
-  phpvm_echo '  phpvm tty           Open a terminal for interacting with the active PHP version'        
+  phpvm_echo '  phpvm tty           Open a terminal for interacting with the active PHP version'  
+  phpvm_echo '  phpvm deactivate    Deactivate the current active PHP version'      
   phpvm_echo
   phpvm_echo 'Example:'
   phpvm_echo '  phpvm use 7.3-cli-alpine  Install and use a specific PHP version'
@@ -151,7 +171,10 @@ phpvm_parse_arguments() {
       phpvm_use $2
     ;;
     "tty")
-      phpvm_tty $2
+      phpvm_tty
+    ;;
+    "deactivate")
+      phpvm_deactivate
     ;;
   esac
 }
