@@ -56,6 +56,28 @@ phpvm_get_image_name() {
   sudo docker image ls --format "{{.Repository}}-{{.Tag}}\t{{.Repository}}:{{.Tag}}" | grep $1 | awk '{print $2}'
 }
 
+phpvm_get_running_container_id() {
+  local CONTAINER_ID=$(sudo docker container ls --filter name=phpvm --filter "status=running" --format "{{.ID}}")
+  phpvm_echo "$CONTAINER_ID"
+}
+
+phpvm_get_running_container_image() {
+  local CONTAINER_IMAGE=$(sudo docker container ls --filter name=phpvm --filter "status=running" --format "{{.Image}}")
+  phpvm_echo "$CONTAINER_IMAGE"
+}
+
+phpvm_determine_shell_type() {
+  local SHELL_TYPE=bash
+
+  case "$1" in 
+    *alpine*)
+      SHELL_TYPE=ash
+    ;;
+  esac
+
+  phpvm_echo $SHELL_TYPE
+}
+
 phpvm_use() {
   local CONTAINER_NAME=$(phpvm_container_name "$1")
   phpvm_remove_dangling_containers
@@ -65,15 +87,14 @@ phpvm_use() {
     sudo docker image pull php:$1 && sudo docker image tag php:$1 phpvm:$1
   fi
 
-  local SHELL_TYPE=bash
-
-  case "$CONTAINER_NAME" in 
-    *alpine*)
-      SHELL_TYPE=ash
-    ;;
-  esac
-
-  sudo docker container run --name $CONTAINER_NAME -v $(pwd):/src --workdir /src -dt phpvm:$1 $SHELL_TYPE
+  local SHELL_TYPE=$(phpvm_determine_shell_type "$CONTAINER_NAME")
+  sudo docker container run \
+    --name $CONTAINER_NAME \
+    -e "COMPOSER_HOME=/usr/local/composer" \
+    -e "COMPOSER_ALLOW_SUPERUSER=1" \
+    -v $(pwd):/src \
+    --workdir /src \
+    -dt phpvm:$1 $SHELL_TYPE
 }
 
 phpvm_ls() {
@@ -95,11 +116,11 @@ phpvm_ls() {
 
 phpvm_rm() {
   local CONTAINER_NAME=$(phpvm_container_name "$1")
-  if [ -z $CONTAINER_NAME ]; then
+  if [ -z "$CONTAINER_NAME" ]; then
     return $PHPVM_FAIL
   fi
   local IMAGE_NAME=$(phpvm_get_image_name $CONTAINER_NAME)
-  if [ -z $IMAGE_NAME ]; then
+  if [ -z "$IMAGE_NAME" ]; then
     phpvm_err "PHP $1 is not installed."
     return $PHPVM_FAIL
   fi
@@ -107,27 +128,63 @@ phpvm_rm() {
   phpvm_remove_dangling_containers && sudo docker image rm $IMAGE_NAME
 }
 
-phpvm_tty() {
-  local CONTAINER_ID=$(sudo docker container ls --filter name=phpvm --filter "status=running" --format "{{.ID}}")
+phpvm_ensure_user_exists() {
+  if [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ] || [ -z "$4" ]; then
+    return $PHPVM_FAIL
+  fi
+
+  local CONTAINER_ID=$(phpvm_get_running_container_id)
+  local CONTAINER_IMAGE=$(phpvm_get_running_container_image)
+  local SHELL_TYPE=$(phpvm_determine_shell_type "$CONTAINER_IMAGE")
+  local USER_ENTRY="$3:x:$1:$2:$3:/src:/bin/$SHELL_TYPE"
+  local USER_EXISTS=$(sudo docker container exec $CONTAINER_ID grep ":x:$1:" /etc/passwd)
+  local GROUP_ENTRY="$4:x:$2:"
+  local GROUP_EXISTS=$(sudo docker container exec $CONTAINER_ID grep ":x:$2:" /etc/group)
+
+  if [ -z "$USER_EXISTS" ]; then
+    sudo docker container exec $CONTAINER_ID sh -c "echo \"$USER_ENTRY\" >> /etc/passwd"
+  fi
+
+  if [ -z "$GROUP_EXISTS" ]; then
+    sudo docker container exec $CONTAINER_ID sh -c "echo \"$GROUP_ENTRY\" >> /etc/group"
+  fi
+}
+
+phpvm_container_open_terminal() {
+  local CONTAINER_ID=$(phpvm_get_running_container_id)
 
   if [ -z "$CONTAINER_ID" ]; then
     phpvm_err 'PHP is not running.'
     return $PHPVM_FAIL
   fi
-  local CONTAINER_NAME=$(sudo docker container ls --filter name=phpvm --filter "status=running" --format "{{.Image}}")
-  local SHELL_TYPE=bash
+  local CONTAINER_IMAGE=$(phpvm_get_running_container_image)
+  local SHELL_TYPE=$(phpvm_determine_shell_type "$CONTAINER_IMAGE")
+  local USER_FLAG
 
-  case "$CONTAINER_NAME" in 
-    *alpine*)
-      SHELL_TYPE=ash
-    ;;
-  esac
+  if [ ! -z "${1-}" ]; then
+    USER_FLAG="--user $1"
+  fi
 
-  sudo docker container exec -it $CONTAINER_ID $SHELL_TYPE
+  sudo docker container exec -it $USER_FLAG --privileged $CONTAINER_ID $SHELL_TYPE
+}
+
+phpvm_tty() {
+  local USER_ID=$(id -u)
+  local GROUP_ID=$(id -g)
+  local USER_NAME=$(id -un)
+  local GROUP_NAME=$(id -gn)
+
+  if phpvm_ensure_user_exists "$USER_ID" "$GROUP_ID" "$USER_NAME" "$GROUP_NAME"; then
+    phpvm_container_open_terminal "$USER_ID:$GROUP_ID"
+  fi
+}
+
+phpvm_root() {
+  phpvm_container_open_terminal
 }
 
 phpvm_deactivate() {
-  local CONTAINER_ID=$(sudo docker container ls --filter name=phpvm --filter "status=running" --format "{{.ID}}")
+  local CONTAINER_ID=$(phpvm_get_running_container_id)
 
   if [ -z "$CONTAINER_ID" ]; then
     phpvm_err 'PHP is not running.'
@@ -139,13 +196,14 @@ phpvm_deactivate() {
 
 phpvm_print_usage_info() {
   phpvm_echo
-  phpvm_echo 'PHP Version Manager (v0.2.0)'
+  phpvm_echo 'PHP Version Manager (v0.3.0)'
   phpvm_echo
   phpvm_echo 'Usage:'
   phpvm_echo '  phpvm ls            List all installed PHP versions'
   phpvm_echo '  phpvm use <version> Install and use a particular PHP version'
   phpvm_echo '  phpvm rm <version>  Remove an installed PHP version'
-  phpvm_echo '  phpvm tty           Open a terminal for interacting with the active PHP version'  
+  phpvm_echo '  phpvm tty           Open a terminal for interacting with the active PHP version as the current user'  
+  phpvm_echo '  phpvm root          Open a terminal for interacting with the active PHP version as root'
   phpvm_echo '  phpvm deactivate    Deactivate the current active PHP version'      
   phpvm_echo
   phpvm_echo 'Example:'
@@ -172,6 +230,9 @@ phpvm_parse_arguments() {
     ;;
     "tty")
       phpvm_tty
+    ;;
+    "root")
+      phpvm_root
     ;;
     "deactivate")
       phpvm_deactivate
