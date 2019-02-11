@@ -49,11 +49,11 @@ phpvm_remove_dangling_containers() {
 }
 
 phpvm_get_image_id() {
-  sudo docker image ls --format "{{.Repository}}-{{.Tag}}\t{{.ID}}" | grep $1 | awk '{print $2}'
+  sudo docker image ls --format "{{.Repository}}-{{.Tag}}\t{{.ID}}" | grep -P "^$1\t" | awk '{print $2}'
 }
 
 phpvm_get_image_name() {
-  sudo docker image ls --format "{{.Repository}}-{{.Tag}}\t{{.Repository}}:{{.Tag}}" | grep $1 | awk '{print $2}'
+  sudo docker image ls --format "{{.Repository}}-{{.Tag}}\t{{.Repository}}:{{.Tag}}" | grep -P "^$1\t" | awk '{print $2}'
 }
 
 phpvm_get_running_container_id() {
@@ -242,7 +242,7 @@ phpvm_deactivate() {
 
 phpvm_print_usage_info() {
   phpvm_echo
-  phpvm_echo 'PHP Version Manager (v0.4.0)'
+  phpvm_echo 'PHP Version Manager (v0.4.1)'
   phpvm_echo
   phpvm_echo 'Usage:'
   phpvm_echo '  phpvm ls            List all installed PHP versions'
