@@ -78,6 +78,48 @@ phpvm_determine_shell_type() {
   phpvm_echo $SHELL_TYPE
 }
 
+phpvm_ensure_composer_installed() {
+  local CONTAINER_ID=$(phpvm_get_running_container_id)
+  local COMPOSER_INSTALLED=$(sudo docker container exec $CONTAINER_ID which composer)
+
+  if [ ! -z "$COMPOSER_INSTALLED" ]; then
+    return $PHPVM_SUCCESS
+  fi
+
+  local UPDATE_COMMAND='apt-get update'
+  local INSTALL_COMMAND='apt-get install -y'
+
+  case "$1" in
+    *alpine*)
+      UPDATE_COMMAND='apk update'
+      INSTALL_COMMAND='apk add --no-cache'
+    ;;
+  esac
+
+  # install required Linux libraries
+  sudo docker container exec $CONTAINER_ID $UPDATE_COMMAND \
+    && sudo docker container exec $CONTAINER_ID $INSTALL_COMMAND unzip libzip-dev
+
+  # These PHP extensions are required by the Laravel framework and its installer. Symfony works with the default extensions.
+  sudo docker container exec $CONTAINER_ID docker-php-ext-install bcmath zip
+
+  # go on with Composer installation:
+  local EXPECTED_SIGNATURE="$(wget -q -O - https://composer.github.io/installer.sig)"
+  sudo docker container exec $CONTAINER_ID php -r "copy('https://getcomposer.org/installer', 'composer-setup.php');"
+  local ACTUAL_SIGNATURE=$(sudo docker container exec $CONTAINER_ID php -r "echo hash_file('sha384', 'composer-setup.php');")
+
+  if [ "$EXPECTED_SIGNATURE" != "$ACTUAL_SIGNATURE" ]; then
+    sudo docker container exec $CONTAINER_ID rm composer-setup.php
+    return $PHPVM_FAIL
+  fi
+
+  sudo docker container exec $CONTAINER_ID php composer-setup.php --no-ansi --install-dir=/usr/local/bin --filename=composer \
+    && sudo docker container exec $CONTAINER_ID composer --version \
+    && sudo docker container exec $CONTAINER_ID rm composer-setup.php \
+    && sudo docker container exec $CONTAINER_ID mkdir -p /usr/local/composer/repo/https---repo.packagist.org /usr/local/composer/files \
+    && sudo docker container exec $CONTAINER_ID chmod -R a+w /usr/local/composer
+}
+
 phpvm_use() {
   local CONTAINER_NAME=$(phpvm_container_name "$1")
   phpvm_remove_dangling_containers
@@ -95,6 +137,10 @@ phpvm_use() {
     -v $(pwd):/src \
     --workdir /src \
     -dt phpvm:$1 $SHELL_TYPE
+  
+  if ! phpvm_ensure_composer_installed "$CONTAINER_NAME"; then
+    phpvm_err 'phpvm was unable to install Composer automatically'
+  fi
 }
 
 phpvm_ls() {
@@ -196,7 +242,7 @@ phpvm_deactivate() {
 
 phpvm_print_usage_info() {
   phpvm_echo
-  phpvm_echo 'PHP Version Manager (v0.3.0)'
+  phpvm_echo 'PHP Version Manager (v0.4.0)'
   phpvm_echo
   phpvm_echo 'Usage:'
   phpvm_echo '  phpvm ls            List all installed PHP versions'
@@ -240,4 +286,4 @@ phpvm_parse_arguments() {
   esac
 }
 
-phpvm_parse_arguments $@
+phpvm_parse_arguments "$@"
